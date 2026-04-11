@@ -71,7 +71,7 @@ export default function Captcha({ onVerify, refreshKey = 0 }: CaptchaProps) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {/* 验证码显示区域 */}
       <div className="flex items-center gap-3">
         <div className="relative flex-shrink-0">
@@ -130,6 +130,16 @@ export default function Captcha({ onVerify, refreshKey = 0 }: CaptchaProps) {
       <p className="text-xs text-gray-400">
         点击图片可刷新验证码
       </p>
+
+      {/* 确认按钮 */}
+      <button
+        type="button"
+        onClick={handleSubmit}
+        disabled={userInput.length !== 4 || isLoading}
+        className="w-full py-3 bg-blue-500 text-white font-medium rounded-xl hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+      >
+        确认验证码
+      </button>
     </div>
   );
 }
