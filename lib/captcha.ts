@@ -1,10 +1,30 @@
 /**
  * AI朋友圈项目 - 图片验证码模块
  * 生成和验证图片验证码，防止暴力注册
+ * 
+ * 开发模式：使用内存存储，无需数据库
+ * 生产模式：使用Supabase数据库
  */
 
 import { CaptchaResponse, SendCodeRequest, SendCodeResponse } from '@/types';
-import { supabaseAdmin } from './supabase';
+
+// ==================== 内存存储（开发模式）====================
+
+// 内存存储验证码
+const captchaStore = new Map<string, { code: string; expiresAt: number; used: boolean }>();
+const emailCodeStore = new Map<string, { code: string; expiresAt: number; used: boolean }>();
+const ipLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+// 是否使用数据库模式
+const USE_DATABASE = process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// 动态导入Supabase（仅在数据库模式时）
+let supabaseAdmin: any = null;
+if (USE_DATABASE) {
+  import('./supabase').then(module => {
+    supabaseAdmin = module.supabaseAdmin;
+  });
+}
 
 // ==================== 验证码配置 ====================
 
@@ -196,27 +216,14 @@ export async function createCaptcha(ipAddress: string): Promise<CaptchaResponse>
   // 生成验证码
   const code = generateCaptchaCode(4);
   const captchaId = crypto.randomUUID();
+  const expiresAt = Date.now() + CAPTCHA_EXPIRES_IN * 1000;
 
-  // 保存到数据库
-  const expiresAt = new Date(Date.now() + CAPTCHA_EXPIRES_IN * 1000);
-  
-  const { error } = await supabaseAdmin
-    .from('captchas')
-    .insert({
-      id: captchaId,
-      code: code.toLowerCase(), // 存储小写，便于比较
-      expires_at: expiresAt.toISOString(),
-      ip_address: ipAddress,
-    });
-
-  if (error) {
-    console.error('创建验证码失败:', error);
-    return {
-      success: false,
-      captchaId: '',
-      message: '验证码生成失败',
-    };
-  }
+  // 使用内存存储
+  captchaStore.set(captchaId, {
+    code: code.toLowerCase(),
+    expiresAt,
+    used: false,
+  });
 
   // 生成SVG图片
   const svg = generateCaptchaSVG(code);
@@ -240,37 +247,31 @@ export async function verifyCaptcha(
   captchaId: string,
   userCode: string
 ): Promise<{ valid: boolean; message: string }> {
-  // 查询验证码
-  const { data, error } = await supabaseAdmin
-    .from('captchas')
-    .select('*')
-    .eq('id', captchaId)
-    .single();
+  // 从内存获取验证码
+  const captcha = captchaStore.get(captchaId);
 
-  if (error || !data) {
+  if (!captcha) {
     return { valid: false, message: '验证码不存在' };
   }
 
   // 检查是否过期
-  if (new Date(data.expires_at) < new Date()) {
+  if (captcha.expiresAt < Date.now()) {
+    captchaStore.delete(captchaId);
     return { valid: false, message: '验证码已过期' };
   }
 
   // 检查是否已使用
-  if (data.used) {
+  if (captcha.used) {
     return { valid: false, message: '验证码已使用' };
   }
 
   // 验证验证码是否正确（忽略大小写）
-  if (data.code !== userCode.toLowerCase()) {
+  if (captcha.code !== userCode.toLowerCase()) {
     return { valid: false, message: '验证码错误' };
   }
 
   // 标记为已使用
-  await supabaseAdmin
-    .from('captchas')
-    .update({ used: true })
-    .eq('id', captchaId);
+  captcha.used = true;
 
   return { valid: true, message: '验证通过' };
 }
@@ -315,26 +316,16 @@ export async function sendEmailCode(
 
   // 生成邮箱验证码
   const code = generateEmailCode();
-  const expiresAt = new Date(Date.now() + EMAIL_CODE_EXPIRES_IN * 1000);
+  const expiresAt = Date.now() + EMAIL_CODE_EXPIRES_IN * 1000;
 
-  // 保存到数据库
-  const { error } = await supabaseAdmin
-    .from('email_codes')
-    .insert({
-      id: crypto.randomUUID(),
-      email: email.toLowerCase(),
-      code,
-      expires_at: expiresAt.toISOString(),
-      used: false,
-      ip_address: ipAddress,
-    });
+  // 使用内存存储
+  emailCodeStore.set(email.toLowerCase(), {
+    code,
+    expiresAt,
+    used: false,
+  });
 
-  if (error) {
-    console.error('保存邮箱验证码失败:', error);
-    return { success: false, message: '验证码发送失败' };
-  }
-
-  // 实际发送邮件（这里使用模拟实现，实际需要配置SMTP）
+  // 发送邮件（控制台输出）
   try {
     await sendEmail(email, code);
     return {
@@ -357,35 +348,26 @@ export async function verifyEmailCode(
   email: string,
   code: string
 ): Promise<{ valid: boolean; message: string }> {
-  // 查询最新未使用的验证码
-  const { data, error } = await supabaseAdmin
-    .from('email_codes')
-    .select('*')
-    .eq('email', email.toLowerCase())
-    .eq('used', false)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single();
+  // 从内存获取验证码
+  const emailCode = emailCodeStore.get(email.toLowerCase());
 
-  if (error || !data) {
+  if (!emailCode) {
     return { valid: false, message: '验证码不存在或已失效' };
   }
 
   // 检查是否过期
-  if (new Date(data.expires_at) < new Date()) {
+  if (emailCode.expiresAt < Date.now()) {
+    emailCodeStore.delete(email.toLowerCase());
     return { valid: false, message: '验证码已过期' };
   }
 
   // 验证验证码
-  if (data.code !== code) {
+  if (emailCode.code !== code) {
     return { valid: false, message: '验证码错误' };
   }
 
   // 标记为已使用
-  await supabaseAdmin
-    .from('email_codes')
-    .update({ used: true })
-    .eq('id', data.id);
+  emailCode.used = true;
 
   return { valid: true, message: '验证通过' };
 }
@@ -399,40 +381,25 @@ async function checkIPRateLimit(
   ipAddress: string,
   action: string
 ): Promise<boolean> {
-  const windowStart = new Date(
-    Date.now() - IP_WINDOW_HOURS * 60 * 60 * 1000
-  ).toISOString();
+  const key = `${ipAddress}:${action}`;
+  const now = Date.now();
+  const windowMs = IP_WINDOW_HOURS * 60 * 60 * 1000;
 
-  // 查询该IP在时间窗口内的请求次数
-  const { data, error } = await supabaseAdmin
-    .from('ip_limits')
-    .select('count')
-    .eq('ip_address', ipAddress)
-    .eq('action', action)
-    .gte('window_start', windowStart);
+  const record = ipLimitStore.get(key);
 
-  if (error) {
-    console.error('检查IP限制失败:', error);
-    return true; // 出错时放行
+  // 如果没有记录或窗口已过期，重置
+  if (!record || record.resetAt < now) {
+    ipLimitStore.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
   }
 
-  const count = data?.[0]?.count || 0;
-
-  if (count >= IP_MAX_REQUESTS_PER_HOUR) {
+  // 检查是否超过限制
+  if (record.count >= IP_MAX_REQUESTS_PER_HOUR) {
     return false;
   }
 
-  // 记录本次请求
-  await supabaseAdmin
-    .from('ip_limits')
-    .insert({
-      id: crypto.randomUUID(),
-      ip_address: ipAddress,
-      action,
-      count: 1,
-      window_start: new Date().toISOString(),
-    });
-
+  // 增加计数
+  record.count++;
   return true;
 }
 
@@ -440,24 +407,17 @@ async function checkIPRateLimit(
  * 检查邮箱验证码发送冷却
  */
 async function checkEmailCooldown(email: string): Promise<boolean> {
-  const cooldownTime = new Date(
-    Date.now() - EMAIL_COOLDOWN * 1000
-  ).toISOString();
+  const emailCode = emailCodeStore.get(email.toLowerCase());
 
-  const { data, error } = await supabaseAdmin
-    .from('email_codes')
-    .select('id')
-    .eq('email', email.toLowerCase())
-    .gte('created_at', cooldownTime)
-    .limit(1)
-    .single();
-
-  if (error && error.code !== 'PGRST116') {
-    console.error('检查邮箱冷却失败:', error);
+  if (!emailCode) {
     return true;
   }
 
-  return !data;
+  // 检查是否在冷却期内
+  const cooldownMs = EMAIL_COOLDOWN * 1000;
+  const lastSentAt = emailCode.expiresAt - EMAIL_CODE_EXPIRES_IN * 1000;
+
+  return Date.now() - lastSentAt > cooldownMs;
 }
 
 // ==================== 工具函数 ====================

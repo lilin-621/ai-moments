@@ -2,28 +2,18 @@
  * API路由：验证邮箱验证码并登录
  * POST /api/auth/verify
  * 
- * 请求体：
- * {
- *   email: string,  // 邮箱地址
- *   code: string    // 邮箱验证码
- * }
- * 
- * 响应：
- * {
- *   success: boolean,
- *   user?: User,        // 用户信息
- *   token?: string,     // JWT令牌
- *   message?: string
- * }
+ * 开发模式：使用内存存储，无需数据库
  */
 
 import { NextResponse } from 'next/server';
 import { verifyEmailCode } from '@/lib/captcha';
-import { getUserByEmail, createUser, updateLastLogin } from '@/lib/supabase';
 import { cookies } from 'next/headers';
 
-// JWT密钥（实际使用时应从环境变量读取）
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+// JWT密钥
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-key-change-in-production';
+
+// 内存存储用户数据
+const usersStore = new Map<string, { id: string; email: string; nickname: string; avatar: string }>();
 
 /**
  * 生成简单的JWT令牌
@@ -99,15 +89,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // 查询或创建用户
-    let user = await getUserByEmail(email);
+    // 从内存查询或创建用户
+    let user = usersStore.get(email.toLowerCase());
     
     if (!user) {
       // 新用户，自动注册
-      user = await createUser(email);
-    } else {
-      // 老用户，更新登录时间
-      await updateLastLogin(user.id);
+      const userId = crypto.randomUUID();
+      const nickname = `用户${Math.random().toString(36).substring(2, 8)}`;
+      const avatarIndex = Math.floor(Math.random() * 70) + 1;
+      
+      user = {
+        id: userId,
+        email: email.toLowerCase(),
+        nickname,
+        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${avatarIndex}`,
+      };
+      
+      usersStore.set(email.toLowerCase(), user);
     }
 
     // 生成JWT令牌
@@ -173,8 +171,8 @@ export async function GET(request: Request) {
       });
     }
 
-    // 获取用户信息
-    const user = await getUserByEmail(decoded.email);
+    // 从内存获取用户信息
+    const user = usersStore.get(decoded.email);
 
     if (!user) {
       return NextResponse.json({
